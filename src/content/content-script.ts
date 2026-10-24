@@ -1,0 +1,75 @@
+import { ExtensionMessage, MessageResponse, ExtractedPost } from '../types';
+import { extractVisiblePostsFromDom, isSupportedLinkedInUrl } from './post-extractor';
+import { injectInlineSummarizeButtons, removeInlineSummarizeButtons } from './inline-button';
+import { getSettings } from '../lib/storage';
+
+chrome.runtime.onMessage.addListener(
+  (
+    message: ExtensionMessage,
+    _sender,
+    sendResponse: (res: MessageResponse<ExtractedPost>) => void
+  ) => {
+    if (message.type === 'EXTRACT_ACTIVE_POST') {
+      if (!isSupportedLinkedInUrl(window.location.href)) {
+        sendResponse({
+          ok: false,
+          error: {
+            code: 'UNSUPPORTED_PAGE',
+            message: 'Current page is not a supported LinkedIn profile URL (/in/...).',
+            nextStep: 'Navigate to a LinkedIn profile or paste profile text manually.',
+          },
+        });
+        return true;
+      }
+
+      const { primaryPost } = extractVisiblePostsFromDom(document);
+
+      if (!primaryPost) {
+        sendResponse({
+          ok: false,
+          error: {
+            code: 'NO_POST_DETECTED',
+            message: 'No readable LinkedIn profile data was found.',
+            nextStep: 'Scroll down slightly on the profile or use Manual Paste below.',
+          },
+        });
+        return true;
+      }
+
+      sendResponse({
+        ok: true,
+        data: primaryPost,
+      });
+      return true;
+    }
+    return false;
+  }
+);
+
+async function initInlineObserver(): Promise<void> {
+  const settings = await getSettings();
+  if (!settings.enableInlineButton) {
+    removeInlineSummarizeButtons();
+    return;
+  }
+
+  const handleInlineTrigger = (profile: ExtractedPost) => {
+    chrome.runtime.sendMessage({
+      type: 'INLINE_SUMMARIZE_TRIGGERED',
+      payload: { post: profile },
+    });
+  };
+
+  injectInlineSummarizeButtons(handleInlineTrigger);
+
+  const observer = new MutationObserver(() => {
+    injectInlineSummarizeButtons(handleInlineTrigger);
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+initInlineObserver().catch(() => {});
